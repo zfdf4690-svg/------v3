@@ -1,0 +1,5 @@
+{
+  "name": "会议纪要助手plan1",
+  "description": "",
+  "requestFramePermissions": ["camera", "microphone"]
+}
