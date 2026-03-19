@@ -112,7 +112,8 @@ export function ActiveMeeting() {
         const data = text ? JSON.parse(text) : {};
         
         if (data.todos) setTodos(data.todos);
-        if (data.activeVote) setActiveVote(data.activeVote);
+        // Do not let a null activeVote from the server override an active local poll.
+        if (data.activeVote !== undefined && data.activeVote !== null) setActiveVote(data.activeVote);
       } catch (error) {
         console.error('Sync failed', error);
       } finally {
@@ -271,9 +272,35 @@ export function ActiveMeeting() {
       }]);
       setNewTodo('');
     } catch (error: any) {
+      console.error('[handleAddTodo]', error);
       alert(error.message);
     } finally {
       setIsAddingTodo(false);
+    }
+  };
+
+  const handleUpdateTodo = async (id: string, updates: any) => {
+    try {
+      const res = await fetch(`/api/todos/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updates)
+      });
+      if (!res.ok) throw new Error('更新待办失败');
+    } catch (error: any) {
+      console.error('[handleUpdateTodo]', error);
+      alert(error.message);
+    }
+  };
+
+  const handleDeleteTodo = async (id: string) => {
+    try {
+      const res = await fetch(`/api/todos/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('删除待办失败');
+      setTodos(todos.filter(t => t.id !== id));
+    } catch (error: any) {
+      console.error('[handleDeleteTodo]', error);
+      alert(error.message);
     }
   };
 
@@ -781,9 +808,31 @@ export function ActiveMeeting() {
                   {todos.map((todo) => (
                     <div key={todo.id} className="flex items-center gap-3 p-2 hover:bg-slate-100 dark:hover:bg-white/5 rounded-lg transition-colors group">
                       <GripVertical className="text-slate-400 dark:text-slate-500 w-4 h-4 cursor-grab" />
-                      <input type="checkbox" checked={todo.checked} onChange={() => {}} className="rounded border-blue-500/40 text-blue-600 focus:ring-blue-600 w-4 h-4" />
-                      <input type="text" value={todo.text} readOnly className="bg-transparent border-none p-0 text-sm text-slate-700 dark:text-slate-300 focus:ring-0 flex-1 outline-none" />
-                      <button className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400">
+                      <input 
+                        type="checkbox" 
+                        checked={todo.checked} 
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setTodos(todos.map(t => t.id === todo.id ? { ...t, checked, status: checked ? '已完成' : '进行中' } : t));
+                          handleUpdateTodo(todo.id, { status: checked ? '已完成' : '进行中' });
+                        }} 
+                        className="rounded border-blue-500/40 text-blue-600 focus:ring-blue-600 w-4 h-4" 
+                      />
+                      <input 
+                        type="text" 
+                        value={todo.text} 
+                        onChange={(e) => {
+                          setTodos(todos.map(t => t.id === todo.id ? { ...t, text: e.target.value } : t));
+                        }}
+                        onBlur={(e) => {
+                          handleUpdateTodo(todo.id, { task: e.target.value });
+                        }}
+                        className="bg-transparent border-none p-0 text-sm text-slate-700 dark:text-slate-300 focus:ring-0 flex-1 outline-none" 
+                      />
+                      <button 
+                        onClick={() => handleDeleteTodo(todo.id)}
+                        className="opacity-0 group-hover:opacity-100 text-slate-400 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400"
+                      >
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </div>

@@ -8,17 +8,15 @@ import OpenAI from "openai";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// OpenAI client (DashScope) — initialised lazily so the server starts even without a key
+// OpenAI-compatible client (4sAPI 中转平台) — 从 .env 读取 key 和 baseURL
 // ---------------------------------------------------------------------------
 function getGenAI(): OpenAI {
-  const apiKey = process.env.DASHSCOPE_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    throw new Error("DASHSCOPE_API_KEY environment variable is not set");
+    throw new Error("OPENAI_API_KEY environment variable is not set");
   }
-  return new OpenAI({
-    apiKey,
-    baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  });
+  const baseURL = process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1";
+  return new OpenAI({ apiKey, baseURL });
 }
 
 // ---------------------------------------------------------------------------
@@ -116,16 +114,41 @@ async function startServer() {
   app.use(express.json());
 
   // -------------------------------------------------------------------------
-  // POST /api/sync  (unchanged mock)
+  // POST /api/sync  — read real todos from DB 
   // -------------------------------------------------------------------------
-  app.post("/api/sync", (_req, res) => {
-    res.json({
-      todos: [
-        { id: '1', text: '下周三前确定供应商名单', checked: false },
-        { id: '2', text: '拟定 KPI 考核体系方案', checked: false },
-      ],
-      activeVote: null,
-    });
+  app.post("/api/sync", async (req, res) => {
+    const { meetingId } = req.body;
+    
+    // 目前 activeVote 功能没有扩展数据库支持，如果需要真实数据得后续加表
+    const activeVote = null;
+    if (meetingId) {
+      console.warn(`[/api/sync] Frontend requested vote sync, but activeVote DB is not implemented yet.`);
+    }
+
+    if (!meetingId) {
+      res.json({ todos: [], activeVote });
+      return;
+    }
+
+    try {
+      const { db } = await import('./server/db.ts');
+      const stmt = db.prepare('SELECT * FROM actionItems WHERE meetingId = ?');
+      const items = stmt.all(meetingId);
+      
+      const mapped = items.map((i: any) => ({
+        id: i.id,
+        text: i.task,
+        checked: i.status === '已完成',
+        status: i.status,
+        assignee: i.assignee,
+        dueDate: i.dueDate
+      }));
+      
+      res.json({ todos: mapped, activeVote });
+    } catch (err: any) {
+      console.error('[/api/sync] Error:', err);
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -140,8 +163,8 @@ async function startServer() {
     }
 
     // 2. Check API key early
-    if (!process.env.DASHSCOPE_API_KEY) {
-      console.error("[gemini-summary] DASHSCOPE_API_KEY is not set");
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("[gemini-summary] OPENAI_API_KEY is not set");
       res.status(503).json({ error: "API Key 未配置，请联系管理员" });
       return;
     }
@@ -149,11 +172,12 @@ async function startServer() {
     try {
       const ai = getGenAI();
       const prompt = buildPrompt(messages);
+      const modelName = process.env.DEFAULT_MODEL || "gpt-5.2";
 
-      console.log(`[gemini-summary] Calling Qwen with ${messages.length} messages…`);
+      console.log(`[gemini-summary] Calling ${modelName} with ${messages.length} messages…`);
 
       const response = await ai.chat.completions.create({
-        model: "qwen-plus",
+        model: modelName,
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_object" },
       });
@@ -200,7 +224,7 @@ async function startServer() {
       return;
     }
 
-    if (!process.env.DASHSCOPE_API_KEY) {
+    if (!process.env.OPENAI_API_KEY) {
       res.status(503).json({ error: "API Key 未配置" });
       return;
     }
@@ -208,9 +232,10 @@ async function startServer() {
     try {
       const ai = getGenAI();
       const prompt = buildSummaryPrompt(chatMessages, title || '未命名会议');
+      const modelName = process.env.DEFAULT_MODEL || "gpt-5.2";
 
       const response = await ai.chat.completions.create({
-        model: "qwen-plus",
+        model: modelName,
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_object" },
       });
@@ -234,15 +259,17 @@ async function startServer() {
       return;
     }
 
-    if (!process.env.DASHSCOPE_API_KEY) {
+    if (!process.env.OPENAI_API_KEY) {
       res.status(503).json({ error: "API Key 未配置" });
       return;
     }
 
     try {
       const ai = getGenAI();
+      const modelName = process.env.DEFAULT_MODEL || "gpt-5.2";
+
       const response = await ai.chat.completions.create({
-        model: "qwen-plus",
+        model: modelName,
         messages: [{ role: "user", content: prompt }]
       });
 
@@ -356,6 +383,46 @@ app.get('/api/knowledge', async (_req, res) => {
       res.status(201).json({ success: true, id });
     } catch (err: any) {
       console.error('[POST /api/todos] Error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch('/api/todos/:id', async (req, res) => {
+    const { status, task, assignee, dueDate } = req.body;
+    try {
+      const { db } = await import('./server/db.ts');
+      const current = db.prepare('SELECT * FROM actionItems WHERE id = ?').get(req.params.id) as any;
+      if (!current) {
+         res.status(404).json({ error: 'Todo not found' });
+         return;
+      }
+      const stmt = db.prepare(`
+        UPDATE actionItems 
+        SET task = ?, status = ?, assignee = ?, dueDate = ?
+        WHERE id = ?
+      `);
+      stmt.run(
+        task || current.task,
+        status || current.status,
+        assignee || current.assignee, 
+        dueDate || current.dueDate,
+        req.params.id
+      );
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('[PATCH /api/todos] Error:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/todos/:id', async (req, res) => {
+    try {
+      const { db } = await import('./server/db.ts');
+      const stmt = db.prepare('DELETE FROM actionItems WHERE id = ?');
+      stmt.run(req.params.id);
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error('[DELETE /api/todos] Error:', err);
       res.status(500).json({ error: err.message });
     }
   });

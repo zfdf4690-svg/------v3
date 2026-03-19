@@ -423,7 +423,11 @@ export function MeetingSummaryDetail() {
         <div className="sticky top-[88px] flex flex-col gap-6">
           <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 shadow-sm">
             <button 
-              onClick={() => setIsEditing(!isEditing)}
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                setIsEditing(!isEditing);
+              }}
               className="mb-6 flex w-full items-center justify-center gap-3 rounded-xl bg-blue-600 py-4 text-sm font-black text-white shadow-lg shadow-blue-600/30 transition-all hover:translate-y-[-1px] hover:shadow-blue-600/40 active:translate-y-0"
             >
               <Edit3 className="w-5 h-5" />
